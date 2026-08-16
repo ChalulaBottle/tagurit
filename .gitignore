@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+scan_config.json
+*.pdf
+*.html
+!tests/**/*.html
