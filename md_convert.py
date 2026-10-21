@@ -27,6 +27,8 @@ Run: pyw md_convert.py
 
 import json
 import os
+import platform
+import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -50,6 +52,13 @@ EXCLUDE_DIR_NAMES = {
     "node_modules", ".git", "__pycache__", "venv", ".venv",
     "site-packages", "AppData",
 }
+
+# Backlog 221a: every conversion lands in one output folder instead of beside
+# its source. The default is the user's Downloads\My PDFs; it is created on
+# first use. The config key is "output_dir". When the key is absent the app
+# has never asked, so the first run step below asks once and stores the answer.
+OUTPUT_DIR_KEY = "output_dir"
+DEFAULT_OUTPUT_DIR = Path.home() / "Downloads" / "My PDFs"
 
 KEY_COLOR = "#ff00ff"   # magenta — chroma-keyed transparent by -transparentcolor;
                         # nothing in the warm clay/pink palette below is near it
@@ -94,6 +103,79 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+def output_dir_is_set(cfg: dict):
+    """True once the first run step has stored an output folder."""
+    return bool(cfg.get(OUTPUT_DIR_KEY))
+
+
+def get_output_dir(cfg: dict):
+    """The configured output folder, or the default when nothing is stored yet."""
+    value = cfg.get(OUTPUT_DIR_KEY)
+    return Path(value) if value else DEFAULT_OUTPUT_DIR
+
+
+def ensure_output_dir(path):
+    """Create the output folder (and parents) if missing. Returns it as a Path."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def resolve_output_dir(cfg: dict, ask, save=save_config, force=False):
+    """The first run step, kept free of Tk so it can be tested directly.
+
+    `ask(default)` is a callable that shows the dialog and returns the chosen
+    folder as a str, or None when the user dismissed it. It is called only
+    when no folder is stored yet (or when `force` is True, which is how the
+    "change it later" path reuses the same dialog). A dismissed dialog falls
+    back to the default. The answer is stored in cfg under "output_dir",
+    persisted via `save`, and returned as a Path.
+    """
+    if output_dir_is_set(cfg) and not force:
+        return Path(cfg[OUTPUT_DIR_KEY])
+    chosen = ask(str(DEFAULT_OUTPUT_DIR))
+    chosen_path = Path(chosen) if chosen else DEFAULT_OUTPUT_DIR
+    cfg[OUTPUT_DIR_KEY] = str(chosen_path)
+    save(cfg)
+    return chosen_path
+
+
+def plan_output_path(md_path, ext, output_dir, dedupe=None):
+    """Where a conversion of `md_path` to `ext` is written.
+
+    The output file keeps the source's name but lives in `output_dir`, never
+    beside the source. Same name collisions inside that folder go through the
+    existing `_dedupe_path` convention ("notes (2).pdf"), so two different
+    notes.md files from two folders both survive.
+    """
+    if dedupe is None:
+        dedupe = MDConvertApp._dedupe_path
+    out_dir = ensure_output_dir(output_dir)
+    target = out_dir / Path(md_path).with_suffix(ext).name
+    return dedupe(str(target))
+
+
+def open_in_file_manager(path, system=None, run=None):
+    """Open `path` in the OS file manager. Creates the folder first.
+
+    `system` and `run` are injectable for tests. os.startfile only exists on
+    Windows, so macOS and Linux go through their own openers.
+    """
+    folder = str(ensure_output_dir(path))
+    system = system or platform.system()
+    if run is None:
+        run = _default_folder_opener(system)
+    run(folder)
+    return folder
+
+
+def _default_folder_opener(system):
+    if system == "Windows":
+        return os.startfile
+    opener = "open" if system == "Darwin" else "xdg-open"
+    return lambda target: subprocess.Popen([opener, target])
 
 
 def scan_for_markdown(roots: list) -> list:
@@ -187,6 +269,12 @@ class MDConvertApp:
 
         self._build_controls()
 
+        # First run step (backlog 221a): ask once where output should go,
+        # offering the default. Nothing is asked again once the answer is
+        # stored; the "Output folder" button is the way to change it later.
+        if not output_dir_is_set(self.cfg):
+            self._choose_output_dir()
+
     def _drag_start(self, event):
         self._dx, self._dy = event.x, event.y
 
@@ -234,6 +322,13 @@ class MDConvertApp:
                            fg=CARD, bg=BLUE, font=(FONT_SANS, 10, "bold"))
 
         self._make_button("+ Folder", self.on_add_folder, pad + 120, 396, 110, 26,
+                           fg=INK, bg=CARD_2, font=(FONT_SANS, 10))
+
+        # Backlog 221a: a dedicated Open Output button, plus the way to change
+        # the folder later (same dialog as the first run step).
+        self._make_button("Open Output", self.on_open_output, pad + 240, 396, 110, 26,
+                           fg=INK, bg=CARD_2, font=(FONT_SANS, 10))
+        self._make_button("Output folder", self.on_change_output_dir, pad + 360, 396, 110, 26,
                            fg=INK, bg=CARD_2, font=(FONT_SANS, 10))
 
         self.format_var = tk.StringVar(value="PDF")
@@ -385,6 +480,39 @@ class MDConvertApp:
             save_config(self.cfg)
             self.status.config(text=f"{len(self.cfg['roots'])} folders configured", fg=INK_2)
 
+    def _ask_output_dir_dialog(self, default):
+        """The one dialog used both on first run and when changing it later.
+
+        Yes keeps the offered default. No opens a folder picker. Dismissing
+        the picker returns None, which resolve_output_dir treats as the default.
+        """
+        use_default = messagebox.askyesno(
+            "Tagurit",
+            f"Where should converted files go?\n\nDefault:\n{default}\n\n"
+            "Yes keeps the default. No lets you pick another folder.",
+            parent=self.root,
+        )
+        if use_default:
+            return default
+        picked = filedialog.askdirectory(title="Choose the output folder",
+                                         initialdir=str(Path(default).parent),
+                                         parent=self.root)
+        return picked or None
+
+    def _choose_output_dir(self, force=False):
+        chosen = resolve_output_dir(self.cfg, ask=self._ask_output_dir_dialog, force=force)
+        self.status.config(text=f"Output folder: {chosen}", fg=INK_2)
+        return chosen
+
+    def on_change_output_dir(self):
+        self._choose_output_dir(force=True)
+
+    def on_open_output(self):
+        try:
+            open_in_file_manager(get_output_dir(self.cfg))
+        except OSError as e:
+            messagebox.showerror("Tagurit", f"Could not open the output folder: {e}")
+
     def on_convert(self):
         sel = self.listbox.curselection()
         if not sel:
@@ -393,10 +521,16 @@ class MDConvertApp:
         md_path = self.displayed[sel[0]]
         fmt = self.format_var.get()
         ext, converter = CONVERTERS[fmt]
-        # A prior run's same-named output was found to be silently overwritten
-        # with no warning (confirmed via adversarial testing) — disambiguate
-        # instead, same convention as Windows' own "Copy (2)".
-        out_path = self._dedupe_path(str(Path(md_path).with_suffix(ext)))
+        # Output goes to the configured folder (backlog 221a), not beside the
+        # source. A prior run's same-named output was found to be silently
+        # overwritten with no warning (confirmed via adversarial testing), so
+        # plan_output_path disambiguates inside that folder, same convention
+        # as Windows' own "Copy (2)".
+        try:
+            out_path = plan_output_path(md_path, ext, get_output_dir(self.cfg))
+        except OSError as e:
+            messagebox.showerror("Tagurit", f"Could not prepare the output folder: {e}")
+            return
 
         # xhtml2pdf measured at 50+ seconds on a multi-MB markdown file — running
         # that on the main thread freezes the whole GUI with no feedback at all.
@@ -440,7 +574,7 @@ class MDConvertApp:
 
     def _on_status_click(self, _event):
         if self._last_output_dir and Path(self._last_output_dir).is_dir():
-            os.startfile(self._last_output_dir)
+            open_in_file_manager(self._last_output_dir)
 
     def run(self):
         self.root.mainloop()
