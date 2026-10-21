@@ -118,3 +118,48 @@ correct and now genuinely exercised (not vacuous). Two real UX/data-safety
 bugs found and fixed (GUI freeze, silent overwrite). One real limitation
 documented and deferred (CJK/emoji glyph rendering) rather than silently
 dropped.
+
+## 2026-10-21 (cloud session): output folder feature, backlog 221a
+
+Built from CLOUD-BRIEF.md. `rewrite_engine.py` and `metadata_engine.py` were
+not touched; no test needed them to change.
+
+### Built
+- `output_dir` setting in `scan_config.json`, stored by `resolve_output_dir`
+  in `md_convert.py`. Default is `Path.home() / "Downloads" / "My PDFs"`,
+  created on first use by `ensure_output_dir`. Every conversion now goes
+  through `plan_output_path`, which places the file in that folder instead
+  of beside the source.
+- First run step: when the key is absent, `MDConvertApp` asks once via one
+  dialog (Yes keeps the default, No opens a folder picker, dismissing the
+  picker falls back to the default) and stores the answer. The "Output
+  folder" button runs the same dialog later to change it.
+- "Open Output" button opens the configured folder in the system file
+  manager via `open_in_file_manager` (os.startfile on Windows, `open` on
+  macOS, `xdg-open` elsewhere). The folder is created first if missing. The
+  status line click after a conversion uses the same opener.
+- Dedupe: `plan_output_path` hands the planned path to the existing
+  `_dedupe_path`, so two different `notes.md` files from two folders become
+  `notes.pdf` and `notes (2).pdf` inside the output folder.
+
+### Tests
+`tests/test_output_dir.py`, stdlib unittest, 19 tests: default path, config
+key, first run asks once and stores, user pick stored, dismissed dialog falls
+back to default, not asked again once set, change later reuses the dialog,
+round trip through a real config file, output lands in the folder and not
+beside the source, same name dedupe inside the folder, counter keeps
+incrementing, matches `_dedupe_path` exactly, a real HTML conversion lands in
+the folder, Open Output creates then launches, platform openers. One test is
+Windows only (os.startfile) and skips elsewhere.
+
+Full run: `python -m pytest tests/` gives 35 passed, 1 skipped. The original
+17 are all among the passes.
+
+### Verified beyond the unit tests
+The Tk app was built under Xvfb with the dialogs stubbed: the first run
+dialog fired exactly once, the config file held the folder, the change
+button reused the dialog, Open Output targeted the configured folder, and a
+real `on_convert` wrote `notes.html` into it.
+
+Known limitation left alone, per the brief: CJK and emoji render as boxes in
+PDF output. Items 222 and 223 were not started.
