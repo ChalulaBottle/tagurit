@@ -3,7 +3,11 @@
 Purpose: an open source markdown converter that guarantees the source file is never copied into the output, only retyped character by character into a fresh buffer.
 State: growing
 Lane: free
-Rules: a draft pull request is already open for the output folder feature, do not rebuild that same feature on another branch. Do not edit the rewrite engine or the metadata engine unless a test proves the change is needed, and say so in the commit. All existing tests must keep passing. No bold text, no arrows, no em dashes in anything written.
+Rules:
+- a draft pull request is already open for the output folder feature, do not rebuild that same feature on another branch
+- do not edit the rewrite engine or the metadata engine unless a test proves the change is needed, and say so in the commit
+- all existing tests must keep passing
+- no bold text, no arrows, no em dashes in anything written
 
 ## Next improvements, in order
 
